@@ -261,23 +261,22 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
         pconfig: PrinterConfig = self.printer.lookup_object("configfile")
 
-        self.sense_resistor = config.get("sense_resistor", None)
+        self.sense_resistor = float(config.get("sense_resistor", None))
         if self.sense_resistor is None:
             pconfig.warn(
                 "config",
-                f"""[{self.name}] sense_resistor not specified; using default = 0.075.
+                f"""[{self.name}] sense_resistor not specified; carefully specify a value
                 If this value is wrong, it might burn your house down.
-                This parameter will be mandatory in future versions.
-                Specify the parameter to resolve this warning""",
+                """,
                 self.name,
                 "sense_resistor",
             )
 
-        self.sense_resistor = config.getfloat(
-            "sense_resistor", 0.075, above=0.0
-        )
+        #self.sense_resistor = config.getfloat(
+        #    "sense_resistor", 0.075, above=0.0
+        #)
         #keep CS between 31 and 16 per datasheet.
-        self.cs = config.getint('tmc_cs', 31, maxval=31, minval=16)
+        self.cs = config.getint('tmc_cs', 31, maxval=31, minval=0) #min and max vals here was allowing under 16
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -296,8 +295,16 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         return globalscaler
 
     def _calc_current_bits(self, current):
-        cs = self.cs
-        return cs
+        if self.cs == 0:
+            Ipeak = current * math.sqrt(2)
+            Rsens = self.sense_resistor
+            cs = int(math.ceil(Rsens * 32 * Ipeak / 0.32) - 1)
+        elif self.cs < 31:
+            cs = self.cs
+        else:
+            cs = 31
+        #cs = self.cs
+        return max(0, min(31, cs))
 
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
@@ -309,7 +316,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         globalscaler = self.fields.get_field("globalscaler")
         if not globalscaler:
             globalscaler = 256
-        bits = self.fields.get_field(field_name)
+        bits = self.cs
         return (
             globalscaler
             * (bits + 1)
