@@ -272,11 +272,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
                 "sense_resistor",
             )
 
-        #self.sense_resistor = config.getfloat(
-        #    "sense_resistor", 0.075, above=0.0
-        #)
-        #keep CS between 31 and 16 per datasheet.
-        self.cs = config.getint('tmc_cs', 31, maxval=31, minval=0) #min and max vals here was allowing under 16
+        self.cs = config.getint('tmc_cs', 31, maxval=31, minval=0)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -303,7 +299,6 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
             cs = self.cs
         else:
             cs = 31
-        #cs = self.cs
         return max(0, min(31, cs))
 
     def _calc_current(self, run_current, hold_current):
@@ -316,7 +311,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         globalscaler = self.fields.get_field("globalscaler")
         if not globalscaler:
             globalscaler = 256
-        bits = self.cs
+        bits = self.fields.get_field(field_name)
         return (
             globalscaler
             * (bits + 1)
