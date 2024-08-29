@@ -259,16 +259,21 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
         pconfig: PrinterConfig = self.printer.lookup_object("configfile")
 
-        self.sense_resistor = float(config.get("sense_resistor", None))
+        self.sense_resistor = config.get("sense_resistor", None)
         if self.sense_resistor is None:
             pconfig.warn(
                 "config",
-                f"""[{self.name}] sense_resistor not specified; carefully specify a value
+                f"""[{self.name}] sense_resistor not specified; using default = 0.075.
                 If this value is wrong, it might burn your house down.
-                """,
+                This parameter will be mandatory in future versions.
+                Specify the parameter to resolve this warning""",
                 self.name,
                 "sense_resistor",
             )
+
+        self.sense_resistor = config.getfloat(
+            "sense_resistor", 0.075, above=0.0
+        )
 
         self.cs = config.getint('driver_cs', 31, maxval=31, minval=-1)
         gscaler, irun, ihold = self._calc_current(
