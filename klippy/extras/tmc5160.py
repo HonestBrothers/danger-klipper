@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
+# Modified by Honest Brothers to correct CS calcs (c) 2024
+#
 
 import math
 from . import tmc
@@ -259,21 +261,16 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
         pconfig: PrinterConfig = self.printer.lookup_object("configfile")
 
-        self.sense_resistor = config.get("sense_resistor", None)
+        self.sense_resistor = float(config.get("sense_resistor", None))
         if self.sense_resistor is None:
             pconfig.warn(
                 "config",
-                f"""[{self.name}] sense_resistor not specified; using default = 0.075.
+                f"""[{self.name}] sense_resistor not specified; carefully specify a value
                 If this value is wrong, it might burn your house down.
-                This parameter will be mandatory in future versions.
-                Specify the parameter to resolve this warning""",
+                """,
                 self.name,
                 "sense_resistor",
             )
-
-        self.sense_resistor = config.getfloat(
-            "sense_resistor", 0.075, above=0.0
-        )
 
         self.cs = config.getint('driver_cs', 31, maxval=31, minval=-1)
         gscaler, irun, ihold = self._calc_current(
@@ -298,6 +295,8 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
             Ipeak = current * math.sqrt(2)
             Rsens = self.sense_resistor
             cs = int(math.ceil(Rsens * 32 * Ipeak / 0.32) - 1)
+        elif self.cs < 31:
+            cs = self.cs
         else:
             cs = 31
         return max(0, min(31, cs))
