@@ -253,7 +253,7 @@ FieldFormatters.update(
 ######################################################################
 
 VREF = 0.325
-MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
+MAX_CURRENT = 10.600  # Maximum dependent on board, but 10 is safe sanity check
 
 
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
@@ -304,7 +304,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
         irun = self._calc_current_bits(run_current)
-        ihold = self._calc_current_bits(min(hold_current, run_current))
+        ihold = int((hold_current/run_current)*irun)
         return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
