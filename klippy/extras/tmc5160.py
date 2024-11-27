@@ -3,9 +3,14 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+#
+# Modified by Honest Brothers to correct CS calcs 2024
+#
+
 import math
 from . import tmc
 from . import tmc2130
+from configfile import PrinterConfig
 
 TMC_FREQUENCY = 12000000.0
 
@@ -129,7 +134,7 @@ Fields["DRV_STATUS"] = {
     "s2vsb": 0x01 << 13,
     "stealth": 0x01 << 14,
     "fsactive": 0x01 << 15,
-    "csactual": 0xFF << 16,
+    "cs_actual": 0x1F << 16,
     "stallguard": 0x01 << 24,
     "ot": 0x01 << 25,
     "otpw": 0x01 << 26,
@@ -139,6 +144,7 @@ Fields["DRV_STATUS"] = {
     "olb": 0x01 << 30,
     "stst": 0x01 << 31,
 }
+Fields["FACTORY_CONF"] = {"factory_conf": 0x1F << 0}
 Fields["FACTORY_CONF"] = {"factory_conf": 0x1F << 0}
 Fields["GCONF"] = {
     "recalibrate": 0x01 << 0,
@@ -230,6 +236,7 @@ Fields["TPOWERDOWN"] = {"tpowerdown": 0xFF << 0}
 Fields["TPWMTHRS"] = {"tpwmthrs": 0xFFFFF << 0}
 Fields["TCOOLTHRS"] = {"tcoolthrs": 0xFFFFF << 0}
 Fields["TSTEP"] = {"tstep": 0xFFFFF << 0}
+Fields["THIGH"] = {"thigh": 0xFFFFF << 0}
 
 SignedFields = ["cur_a", "cur_b", "sgt", "xactual", "vactual", "pwm_scale_auto"]
 
@@ -247,70 +254,58 @@ FieldFormatters.update(
 ######################################################################
 
 VREF = 0.325
-MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
+MAX_CURRENT = 10.600  # Maximum dependent on board, but 10 is safe sanity check
 
 
-class TMC5160CurrentHelper:
+class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
-        self.printer = config.get_printer()
-        self.name = config.get_name().split()[-1]
-        self.mcu_tmc = mcu_tmc
-        self.fields = mcu_tmc.get_fields()
-        self.run_current = config.getfloat(
-            "run_current", above=0.0, maxval=MAX_CURRENT
-        )
-        self.hold_current = config.getfloat(
-            "hold_current", MAX_CURRENT, above=0.0, maxval=MAX_CURRENT
-        )
-        self._home_current = config.getfloat(
-            "home_current", self.run_current, above=0.0, maxval=MAX_CURRENT
-        )
-        self.current_change_dwell_time = config.getfloat(
-            "current_change_dwell_time", 0.5, above=0.0
-        )
-        self._prev_current = self.run_current
-        self.req_hold_current = self.hold_current
-        self.sense_resistor = config.getfloat(
-            "sense_resistor", 0.075, above=0.0
-        )
+        super().__init__(config, mcu_tmc, MAX_CURRENT)
+        pconfig: PrinterConfig = self.printer.lookup_object("configfile")
+
+        self.sense_resistor = float(config.get("sense_resistor", None))
+        if self.sense_resistor is None:
+            pconfig.warn(
+                "config",
+                f"""[{self.name}] sense_resistor not specified; carefully specify a value
+                If this value is wrong, it might burn your house down.
+                """,
+                self.name,
+                "sense_resistor",
+            )
+
+        self.cs = config.getint('driver_cs', 31, maxval=31, minval=-1)
         gscaler, irun, ihold = self._calc_current(
-            self.run_current, self.hold_current
+            self.req_run_current, self.req_hold_current
         )
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", irun)
 
-    def needs_home_current_change(self):
-        return self._home_current != self.run_current
-
-    def set_home_current(self, new_home_current):
-        self._home_current = min(MAX_CURRENT, new_home_current)
-
     def _calc_globalscaler(self, current):
+        cs = self._calc_current_bits(current)
         globalscaler = int(
-            (current * 256.0 * math.sqrt(2.0) * self.sense_resistor / VREF)
-            + 0.5
-        )
+            (current * 256.0 * math.sqrt(2.0) * self.sense_resistor * 32 / (
+            VREF * (1 + cs))) + 0.5)
         globalscaler = max(32, globalscaler)
         if globalscaler >= 256:
             globalscaler = 0
         return globalscaler
 
-    def _calc_current_bits(self, current, globalscaler):
-        if not globalscaler:
-            globalscaler = 256
-        cs = int(
-            (current * 256.0 * 32.0 * math.sqrt(2.0) * self.sense_resistor)
-            / (globalscaler * VREF)
-            - 1.0
-            + 0.5
-        )
+    def _calc_current_bits(self, current):
+        if self.cs == -1:
+            Ipeak = current * math.sqrt(2)
+            Rsens = self.sense_resistor
+            cs = int(math.ceil(Rsens * 32 * Ipeak / 0.32) - 1)
+        elif self.cs < 31:
+            cs = self.cs
+        else:
+            cs = 31
         return max(0, min(31, cs))
 
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
-        irun = self._calc_current_bits(run_current, gscaler)
-        ihold = self._calc_current_bits(min(hold_current, run_current), gscaler)
+        irun = self._calc_current_bits(run_current)
+        ihold = int((hold_current/run_current)*irun)
         return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
@@ -333,31 +328,18 @@ class TMC5160CurrentHelper:
             hold_current,
             self.req_hold_current,
             MAX_CURRENT,
-            self._home_current,
+            self.req_home_current,
         )
 
-    def set_current(self, run_current, hold_current, print_time, force=False):
-        if (
-            run_current == self._prev_current
-            and hold_current == self.req_hold_current
-            and not force
-        ):
-            return
-        self.req_hold_current = hold_current
-        gscaler, irun, ihold = self._calc_current(run_current, hold_current)
+    def apply_current(self, print_time):
+        gscaler, irun, ihold = self._calc_current(
+            self.actual_current, self.req_hold_current
+        )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
         self.fields.set_field("ihold", ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
-
-    def set_current_for_homing(self, print_time):
-        prev_run_cur, _, _, _, _ = self.get_current()
-        self._prev_current = prev_run_cur
-        self.set_current(self._home_current, self.hold_current, print_time)
-
-    def set_current_for_normal(self, print_time):
-        self.set_current(self._prev_current, self.hold_current, print_time)
 
 
 ######################################################################
@@ -383,6 +365,9 @@ class TMC5160:
         # Setup basic register values
         tmc.TMCWaveTableHelper(config, self.mcu_tmc)
         tmc.TMCStealthchopHelper(config, self.mcu_tmc, TMC_FREQUENCY)
+        tmc.TMCVcoolthrsHelper(config, self.mcu_tmc)
+        tmc.TMCVhighHelper(config, self.mcu_tmc)
+        # Allow other registers to be set from the config
         set_config_field = self.fields.set_config_field
         #   GCONF
         set_config_field(config, "multistep_filt", True)
@@ -425,6 +410,11 @@ class TMC5160:
         set_config_field(config, "pwm_lim", 12)
         #   TPOWERDOWN
         set_config_field(config, "tpowerdown", 10)
+
+
+def load_config_prefix(config):
+    return TMC5160(config)
+
 
 
 def load_config_prefix(config):
